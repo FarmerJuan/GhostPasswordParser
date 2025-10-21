@@ -3,22 +3,25 @@
 GhostPasswordParser.py
 
 Parse default-http-login-hunter output, clean noise, group credentials per host
-into a single CSV cell, and print a Ghost Energy–themed banner on start.
+into a single CSV cell, print a Ghost Energy–themed banner on start, clone &
+run default-http-login-hunter, extract web servers from a Nessus file, run the
+hunter on the extracted list, and parse its results.
 
 Usage:
     python3 GhostPasswordParser.py hunter_output.txt
-    python3 GhostPasswordParser.py hunter_output.txt --redact --sep " | " --width 80
+    python3 GhostPasswordParser.py -n scan.nessus --outdir results
+    python3 GhostPasswordParser.py -n scan.nessus --no-progress --redact --sep " | "
 
 Flags:
     --redact            : redact passwords in the CSV output (replace with 'REDACTED')
     --sep SEP           : separator used to join creds in CSV (default: '; ')
     --no-color          : disable ANSI color output
     --width N           : banner total width (default: 72)
-    --clone             : clone https://github.com/InfosecMatter/default-http-login-hunter.git (default: true)
+    --clone             : clone the default-http-login-hunter repo (default: true)
+    --no-clone          : do not clone repo
     --repo DIR          : directory to clone repo into (default: ./default-http-login-hunter)
-    --extractor PATH    : path to your Nessus->webservers extractor script (optional)
-    -n/--nessus FILE    : path to a Nessus XML file to extract webserver URLs from (optional)
-    --webservers FILE   : path to webservers list file (default: webservers.txt)
+    -n, --nessus FILE   : path to a Nessus XML file to extract web servers from
+    --webservers FILE   : path to produced web servers list (default: web_servers.txt)
     --hunter-out FILE   : raw hunter output path (default: hunter_raw.txt)
     --no-run-hunter     : skip running the hunter even if repo exists
     --outdir DIR        : output directory for CSV/JSON files (default: .)
@@ -26,11 +29,11 @@ Flags:
     --no-progress       : disable live progress bar while hunter runs
 """
 from __future__ import annotations
-import sys, re, csv, json, argparse, subprocess, shutil, time
+import sys, re, csv, json, argparse, subprocess, shutil, time, xml.etree.ElementTree as ET
 from pathlib import Path
 from datetime import datetime, timezone
 
-__version__ = "1.3"
+__version__ = "1.4"
 __author__ = "GhostPasswordParser (adapted for you)"
 
 ANSI = {"bold":"\033[1m","reset":"\033[0m","cyan":"\033[96m","magenta":"\033[95m","green":"\033[92m","yellow":"\033[93m","white":"\033[97m"}
@@ -256,6 +259,38 @@ def clone_repo(repo_url: str, target: Path, use_color: bool):
         return False
     return True
 
+COMMON_SSL_PORTS = {"443","8443","9443","10443"}
+
+def extract_web_servers_from_nessus_builtin(nessus_file: Path, output_file: Path, use_color: bool) -> bool:
+    try:
+        tree = ET.parse(str(nessus_file))
+        root = tree.getroot()
+    except Exception as e:
+        print(colorize(f"[!] failed to parse nessus file: {e}", "yellow", use_color))
+        return False
+    web_servers = set()
+    for report_host in root.iter("ReportHost"):
+        host_ip = report_host.attrib.get("name", "").strip()
+        for item in report_host.iter("ReportItem"):
+            svc_name = (item.attrib.get("svc_name", "") or "").lower()
+            port = item.attrib.get("port", "").strip()
+            if "http" in svc_name or "www" in svc_name:
+                if "ssl" in svc_name or port in COMMON_SSL_PORTS:
+                    protocol = "https"
+                else:
+                    protocol = "http"
+                if host_ip:
+                    web_servers.add(f"{protocol}://{host_ip}:{port}")
+    try:
+        with output_file.open('w') as fh:
+            for server in sorted(web_servers):
+                fh.write(server + '\n')
+    except Exception as e:
+        print(colorize(f"[!] failed to write web servers file: {e}", "yellow", use_color))
+        return False
+    print(colorize(f"[i] extracted {len(web_servers)} web servers to '{output_file}'", "green", use_color))
+    return True
+
 def count_webservers(webservers_path: Path) -> int:
     if not webservers_path.exists():
         return 0
@@ -279,11 +314,10 @@ def run_hunter(hunter_script: Path, webservers: Path, hunter_out: Path, use_colo
     if not hunter_script or not hunter_script.exists():
         print(colorize(f"[!] hunter script not found: {hunter_script}", "yellow", use_color)); return False
     if not webservers.exists():
-        print(colorize(f"[!] webservers list not found: {webservers}", "yellow", use_color)); return False
+        print(colorize(f"[!] web servers list not found: {webservers}", "yellow", use_color)); return False
     total_targets = count_webservers(webservers)
     print(colorize(f"[i] running hunter: {hunter_script} {webservers} -> {hunter_out}", "green", use_color))
     try:
-        # Run hunter and stream stdout+stderr
         with hunter_out.open('w') as fh:
             proc = subprocess.Popen([str(hunter_script), str(webservers)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=hunter_script.parent, text=True, bufsize=1)
             cur_count = 0
@@ -293,34 +327,27 @@ def run_hunter(hunter_script: Path, webservers: Path, hunter_out: Path, use_colo
                     if raw_line is None:
                         break
                     line = raw_line.rstrip('\n')
-                    # write output to file
-                    fh.write(line + '\n')
-                    fh.flush()
-                    # print live to terminal
+                    fh.write(line + '\n'); fh.flush()
                     print(line)
-                    # progress heuristics: increment on timestamp/status or header-like line
                     if show_progress and total_targets > 0:
                         low = line.lower()
                         if 'trying default http logins on' in low:
                             cur_count += 1
                             print_progress(cur_count, total_targets)
                         else:
-                            # header line like "| ip:80.http....:"
                             if header_re.match(line.strip()):
                                 cur_count += 1
                                 print_progress(cur_count, total_targets)
                 rc = proc.wait()
             except KeyboardInterrupt:
-                proc.terminate()
-                proc.wait()
+                proc.terminate(); proc.wait()
                 print("\n[!] Hunter run interrupted by user.")
                 return False
-            # finalize progress display
             if show_progress and total_targets > 0:
                 if cur_count < total_targets:
                     cur_count = total_targets
                     print_progress(cur_count, total_targets)
-                print()  # newline after progress bar
+                print()
             if rc != 0:
                 print(colorize(f"[!] hunter returned rc {rc}", "yellow", use_color))
                 return False
@@ -329,30 +356,18 @@ def run_hunter(hunter_script: Path, webservers: Path, hunter_out: Path, use_colo
         return False
     return True
 
-def run_extractor(extractor: Path, nessus: Path, webservers: Path, use_color: bool):
-    if not extractor.exists():
-        print(colorize(f"[!] extractor not found: {extractor}", "yellow", use_color)); return False
-    print(colorize(f"[i] running extractor: {extractor} {nessus}", "green", use_color))
-    out, err, rc = run_cmd(['python3', str(extractor), str(nessus)], capture=True)
-    if rc != 0:
-        print(colorize(f"[!] extractor failed (rc {rc}): {err or out}", "yellow", use_color)); return False
-    if webservers.exists():
-        print(colorize(f"[i] webservers list produced: {webservers}", "green", use_color)); return True
-    return True
-
 def build_argparser():
     p = argparse.ArgumentParser(prog="GhostPasswordParser", description="Parse and group default-http-login-hunter output")
     p.add_argument("infile", metavar="INFILE", type=Path, nargs='?', help="hunter output text file (or '-' for stdin)")
     p.add_argument("--redact", action="store_true", help="redact passwords in CSV output")
     p.add_argument("--sep", default="; ", help="separator to join multiple credentials in CSV (default: '; ')")
-    p.add_argument("--no-color", action="store_true", help="disable colored banner output")
+    p.add_argument("--no-color", action="store_true", help="disable ANSI color output")
     p.add_argument("--width", type=int, default=72, help="banner total width (default 72)")
     p.add_argument("--clone", dest="clone", action="store_true", help="clone the default-http-login-hunter repo", default=True)
     p.add_argument("--no-clone", dest="clone", action="store_false", help="do not clone repo")
     p.add_argument("--repo", default="default-http-login-hunter", help="repo directory (default ./default-http-login-hunter)")
-    p.add_argument("--extractor", help="path to Nessus->webservers extractor script (optional)")
-    p.add_argument("-n","--nessus", help="Nessus XML file to extract webservers from (optional)")
-    p.add_argument("--webservers", default="webservers.txt", help="webservers list file (default webservers.txt)")
+    p.add_argument("-n","--nessus", help="Nessus XML file to extract web servers from (optional)")
+    p.add_argument("--webservers", default="web_servers.txt", help="web servers list file (default web_servers.txt)")
     p.add_argument("--hunter-out", default="hunter_raw.txt", help="raw hunter output file (default hunter_raw.txt)")
     p.add_argument("--no-run-hunter", action="store_true", help="skip running the hunter even if repo exists")
     p.add_argument("--outdir", default=".", help="output directory for CSV/JSON files")
@@ -367,32 +382,28 @@ def main(argv=None):
     use_color = not args.no_color and sys.stdout.isatty()
     print_banner(use_color=use_color, total_width=args.width)
     outdir = Path(args.outdir)
-    if args.nessus and args.extractor:
-        nessus = Path(args.nessus)
-        extractor = Path(args.extractor)
-        webservers = Path(args.webservers)
-        if not nessus.exists():
-            print(colorize(f"[!] Nessus file not found: {nessus}", "yellow", use_color)); sys.exit(2)
-        ok = run_extractor(extractor, nessus, webservers, use_color)
-        if not ok:
-            print(colorize("[!] extractor failed; aborting.", "yellow", use_color)); sys.exit(1)
+    repo_dir = Path(args.repo)
     if args.clone:
-        repo_dir = Path(args.repo)
         ok = clone_repo("https://github.com/InfosecMatter/default-http-login-hunter.git", repo_dir, use_color)
         if not ok:
             print(colorize("[!] clone failed (or skipped). If you already have the repo, set --no-clone.", "yellow", use_color))
-    repo_dir = Path(args.repo)
     hunter_script = None
     if not args.no_run_hunter and repo_dir.exists():
         hunter_script = find_hunter_script(repo_dir)
         if not hunter_script:
             print(colorize(f"[!] could not find a hunter script in {repo_dir}; you may need to run the hunter manually.", "yellow", use_color))
-        else:
-            webservers = Path(args.webservers)
-            hunter_out = Path(args.hunter_out)
-            ok = run_hunter(hunter_script, webservers, hunter_out, use_color, show_progress=not args.no_progress)
-            if not ok:
-                print(colorize("[!] hunter run failed; if you already have hunter output, specify its path as INFILE.", "yellow", use_color))
+    webservers_path = Path(args.webservers)
+    if args.nessus:
+        nessus_path = Path(args.nessus)
+        if not nessus_path.exists():
+            print(colorize(f"[!] Nessus file not found: {nessus_path}", "yellow", use_color)); sys.exit(2)
+        ok = extract_web_servers_from_nessus_builtin(nessus_path, webservers_path, use_color)
+        if not ok:
+            print(colorize("[!] extraction failed; aborting.", "yellow", use_color)); sys.exit(1)
+    if not args.no_run_hunter and hunter_script:
+        ok = run_hunter(hunter_script, webservers_path, Path(args.hunter_out), use_color, show_progress=not args.no_progress)
+        if not ok:
+            print(colorize("[!] hunter run failed; if you already have hunter output, specify its path as INFILE.", "yellow", use_color))
     infile_path = None
     if args.infile:
         if args.infile == Path('-'):
