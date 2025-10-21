@@ -5,13 +5,14 @@ GhostPasswordParser.py
 Parse default-http-login-hunter output, clean noise, group credentials per host
 into a single CSV cell, print a Ghost Energy–themed banner on start, clone &
 run default-http-login-hunter, extract web servers from a Nessus file (built-in),
-run the hunter on the extracted list (from inside the hunter repo), stream output
-with a progress bar, then parse and write grouped CSV/JSON results.
+run the hunter on the extracted list (from inside the hunter repo), stream ALL
+raw hunter output to the console (and to hunter_raw.txt), then parse and write
+grouped CSV/JSON results.
 
 Usage:
     python3 GhostPasswordParser.py hunter_output.txt
     python3 GhostPasswordParser.py -n scan.nessus
-    python3 GhostPasswordParser.py -n scan.nessus --outdir results --no-progress
+    python3 GhostPasswordParser.py -n scan.nessus --outdir results
 
 Flags:
     --redact            : redact passwords in the CSV output (replace with 'REDACTED')
@@ -26,7 +27,6 @@ Flags:
     --no-run-hunter     : skip running the hunter even if repo exists
     --outdir DIR        : output directory for CSV/JSON files (default: .)
     --stdout            : also print one-line summary per host to stdout
-    --no-progress       : disable live progress bar while hunter runs
 """
 from __future__ import annotations
 import sys
@@ -40,7 +40,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
 
-__version__ = "1.6"
+__version__ = "2.0"
 __author__ = "GhostPasswordParser (adapted for you)"
 
 ANSI = {
@@ -59,13 +59,13 @@ def colorize(s: str, code: str, use_color: bool = True) -> str:
     return f"{ANSI.get(code, '')}{s}{ANSI['reset']}"
 
 BANNER_LINES = [
-    r"     .-.",
-    r"    (o o)   GHOST",
-    r"   |  O  |  PASSWORD",
-    r"    \   /   PARSER",
-    r"    __) (__",
-    r"   /  `-'  \   Ghost Energy™ style",
-    r"  / /| . |\ \  Clean • Group • Export",
+    r"       .-.",
+    r"      (o o)   GHOST",
+    r"     |  O  |  PASSWORD",
+    r"      \   /   PARSER",
+    r"     __) (__",
+    r"    /  `-'  \   Ghost Energy™ style",
+    r"   / /| . |\ \  Clean • Group • Export",
     r" /_/ |_| |_\\_\ ",
 ]
 
@@ -103,7 +103,10 @@ def extract_ip_port(header: str) -> tuple[str | None, int | None]:
     ip_port_re = re.compile(r"(?P<ip>(?:\d{1,3}\.){3}\d{1,3})[:\.](?P<port>\d{1,5})")
     m = ip_port_re.search(header)
     if m:
-        return m.group("ip"), int(m.group("port"))
+        try:
+            return m.group("ip"), int(m.group("port"))
+        except Exception:
+            return m.group("ip"), None
     ip_re = re.compile(r"((?:\d{1,3}\.){3}\d{1,3})")
     ipm = ip_re.search(header)
     if ipm:
@@ -121,7 +124,7 @@ def extract_ip_port(header: str) -> tuple[str | None, int | None]:
 def is_useless_timestamp_line(line: str) -> bool:
     if not line:
         return False
-    if "trying default http logins on" in line.lower():
+    if "trying default http logins on" in line.lower() or "already tried default http logins" in line.lower():
         return True
     return False
 
@@ -358,14 +361,6 @@ def count_webservers(webservers_path: Path) -> int:
         cnt += 1
     return cnt
 
-def print_progress(cur: int, total: int, width: int = 30):
-    if total <= 0:
-        return
-    frac = min(1.0, max(0.0, cur / total))
-    filled = int(frac * width)
-    bar = "#" * filled + "." * (width - filled)
-    print(f"\rProgress: [{bar}] {cur}/{total}", end="", flush=True)
-
 def _copy_webservers_into_repo(webservers: Path, repo_dir: Path, use_color: bool) -> Path | None:
     try:
         repo_dir.mkdir(parents=True, exist_ok=True)
@@ -389,13 +384,11 @@ def _copy_webservers_into_repo(webservers: Path, repo_dir: Path, use_color: bool
             print(colorize(f"[!] failed to copy or link webservers into repo: {e} / {e2}", "yellow", use_color))
             return None
 
-def run_hunter(hunter_script: Path, webservers: Path, hunter_out: Path, use_color: bool, show_progress: bool = True):
+def run_hunter(hunter_script: Path, webservers: Path, hunter_out: Path, use_color: bool):
     """
-    Robust runner that:
-     - copies/symlinks webservers file into repo_dir
-     - runs: (cd repo_dir && bash runner_basename web_servers_name)
-     - if method1 fails, falls back to: bash /abs/path/to/runner /abs/path/to/webservers (no cwd)
-     - streams output to console and hunter_out; updates progress heuristically
+    Simple runner: copies/symlinks webservers file into repo_dir, runs the hunter
+    from inside the repo using the runner basename; streams ALL raw output to
+    stdout and writes to hunter_out. If method1 fails, falls back to absolute path.
     """
     if not hunter_script or not hunter_script.exists():
         print(colorize(f"[!] hunter script not found: {hunter_script}", "yellow", use_color))
@@ -411,92 +404,59 @@ def run_hunter(hunter_script: Path, webservers: Path, hunter_out: Path, use_colo
         print(colorize("[!] unable to make webservers available inside hunter repo; aborting run.", "yellow", use_color))
         return False
 
-    total_targets = count_webservers(local_ws)
     runner_basename = hunter_script.name
     abs_runner = str(hunter_script.resolve())
     abs_ws = str(local_ws.resolve())
 
-    # Attempt 1: invoke inside repo using runner basename (preferred)
-    cmd1 = ["bash", runner_basename, local_ws.name]
-    print(colorize(f"[i] running hunter (method1): cd {repo_dir} && {' '.join(cmd1)} -> {hunter_out}", "green", use_color))
+    def _stream_proc(cmd: list[str], cwd: Path | None):
+        try:
+            with hunter_out.open("a") as fh:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd, text=True, bufsize=1)
+                try:
+                    for raw_line in proc.stdout:
+                        if raw_line is None:
+                            break
+                        line = raw_line.rstrip("\n")
+                        fh.write(line + "\n")
+                        fh.flush()
+                        # print every raw line immediately
+                        print(line)
+                    rc = proc.wait()
+                    return rc
+                except KeyboardInterrupt:
+                    proc.terminate()
+                    proc.wait()
+                    print("\n[!] Hunter run interrupted by user.")
+                    return 130
+        except FileNotFoundError as e:
+            print(colorize(f"[!] runner command not found: {e}", "yellow", use_color))
+            return 127
+        except Exception as e:
+            print(colorize(f"[!] error running process: {e}", "yellow", use_color))
+            return 1
+
+    # Attempt 1: run from inside repo using basename
+    print(colorize(f"[i] running hunter: cd {repo_dir} && bash {runner_basename} {local_ws.name} -> {hunter_out}", "green", use_color))
+    # ensure hunter_out exists/truncated
     try:
-        with hunter_out.open("w") as fh:
-            proc = subprocess.Popen(cmd1, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=repo_dir, text=True, bufsize=1)
-            cur_count = 0
-            header_re = re.compile(r"^\|\s*.*http", re.I)
-            try:
-                for raw_line in proc.stdout:
-                    if raw_line is None:
-                        break
-                    line = raw_line.rstrip("\n")
-                    fh.write(line + "\n")
-                    fh.flush()
-                    print(line)
-                    if show_progress and total_targets > 0:
-                        low = line.lower()
-                        if "trying default http logins on" in low or header_re.match(line.strip()):
-                            cur_count += 1
-                            print_progress(cur_count, total_targets)
-                rc = proc.wait()
-            except KeyboardInterrupt:
-                proc.terminate()
-                proc.wait()
-                print("\n[!] Hunter run interrupted by user.")
-                return False
+        hunter_out.parent.mkdir(parents=True, exist_ok=True)
+        hunter_out.unlink(missing_ok=True)
+    except Exception:
+        pass
+    hunter_out.write_text("")  # create/truncate
 
-            if rc == 0:
-                if show_progress and total_targets > 0:
-                    if cur_count < total_targets:
-                        cur_count = total_targets
-                        print_progress(cur_count, total_targets)
-                    print()
-                return True
+    rc1 = _stream_proc(["bash", runner_basename, local_ws.name], cwd=repo_dir)
+    if rc1 == 0:
+        return True
+    print(colorize(f"[debug] method1 returned rc {rc1}; trying fallback", "yellow", use_color))
 
-            print(colorize(f"[debug] method1 returned rc {rc}; trying fallback", "yellow", use_color))
-    except Exception as e:
-        print(colorize(f"[debug] method1 exception: {e}", "yellow", use_color))
-
-    # Attempt 2: fallback to absolute paths (no cwd)
-    cmd2 = ["bash", abs_runner, abs_ws]
-    print(colorize(f"[i] running hunter (fallback): {' '.join(cmd2)} -> {hunter_out} (appending)", "green", use_color))
-    try:
-        with hunter_out.open("a") as fh:
-            proc = subprocess.Popen(cmd2, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-            cur_count = 0
-            header_re = re.compile(r"^\|\s*.*http", re.I)
-            try:
-                for raw_line in proc.stdout:
-                    if raw_line is None:
-                        break
-                    line = raw_line.rstrip("\n")
-                    fh.write(line + "\n")
-                    fh.flush()
-                    print(line)
-                    if show_progress and total_targets > 0:
-                        low = line.lower()
-                        if "trying default http logins on" in low or header_re.match(line.strip()):
-                            cur_count += 1
-                            print_progress(cur_count, total_targets)
-                rc = proc.wait()
-            except KeyboardInterrupt:
-                proc.terminate()
-                proc.wait()
-                print("\n[!] Hunter run interrupted by user.")
-                return False
-
-            if rc != 0:
-                print(colorize(f"[!] hunter returned rc {rc} on fallback", "yellow", use_color))
-                return False
-
-            if show_progress and total_targets > 0:
-                if cur_count < total_targets:
-                    cur_count = total_targets
-                    print_progress(cur_count, total_targets)
-                print()
-            return True
-    except Exception as e:
-        print(colorize(f"[!] fallback failed: {e}", "yellow", use_color))
+    # Fallback: run with absolute paths (no cwd)
+    print(colorize(f"[i] running hunter (fallback): bash {abs_runner} {abs_ws} -> {hunter_out}", "green", use_color))
+    rc2 = _stream_proc(["bash", abs_runner, abs_ws], cwd=None)
+    if rc2 != 0:
+        print(colorize(f"[!] hunter returned rc {rc2} on fallback", "yellow", use_color))
         return False
+    return True
 
 # ---------------- Arg parsing ----------------
 
@@ -516,7 +476,6 @@ def build_argparser():
     p.add_argument("--no-run-hunter", action="store_true", help="skip running the hunter even if repo exists")
     p.add_argument("--outdir", default=".", help="output directory for CSV/JSON files")
     p.add_argument("--stdout", action="store_true", help="also print one-line summary per host to stdout")
-    p.add_argument("--no-progress", action="store_true", help="disable live progress bar while hunter runs")
     return p
 
 # ---------------- Main ----------------
@@ -554,7 +513,7 @@ def main(argv=None):
 
     # If hunter should run and we found a runner
     if not args.no_run_hunter and hunter_script:
-        ok = run_hunter(hunter_script, webservers_path, Path(args.hunter_out), use_color, show_progress=not args.no_progress)
+        ok = run_hunter(hunter_script, webservers_path, Path(args.hunter_out), use_color)
         if not ok:
             print(colorize("[!] hunter run failed; if you already have hunter output, specify its path as INFILE.", "yellow", use_color))
 
