@@ -1,156 +1,198 @@
-GhostPasswordParser
-
-Ghost Energy–style parser for default-http-login-hunter output — extract web targets from Nessus, run the hunter, stream raw output, and produce cleaned, grouped credential exports (CSV + JSON).
-Fast, practical, and made for pentesters who want tidy results.
-
-🔥 What it does (TL;DR)
-
-Optionally extracts web servers from a Nessus .nessus file into web_servers.txt.
-
-Optionally clones default-http-login-hunter and runs it against the extracted target list.
-
-Streams all raw hunter output to your console and saves it to hunter_raw.txt.
-
-Parses that output, removes noise, groups multiple credentials per host into a single CSV cell, and exports:
-
-hunter_parsed_grouped.csv
-
-hunter_parsed_grouped.json
-
-Think of GhostPasswordParser as “glue + cleanup” so your creds are export-ready.
-
-📦 Badges (drop-in)
-
-You can paste these into the top of your repo README.md:
+```markdown
+# GhostPasswordParser
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)]
 [![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)]
 [![GitHub Release](https://img.shields.io/github/v/release/<youruser>/<repo>?label=release)]
 
+GhostPasswordParser is a lightweight helper for pentesters: it extracts web targets from Nessus exports, runs default-http-login-hunter (optionally), streams and saves raw hunter output, then parses, cleans, and groups discovered credentials into tidy CSV and JSON exports.
 
-Replace <youruser>/<repo> with your GitHub repo path.
+Think of it as “glue + cleanup” to make credential exports ready for reporting or ingestion.
 
-✅ Requirements
+---
 
-Linux (Kali or Debian-based recommended)
+Table of Contents
+- Quick overview
+- Badges & Requirements
+- Quick install
+- Usage & examples
+- Important flags
+- Output files
+- Troubleshooting
+- Security & legal
+- Contributing
+- License
+- FAQ
 
-Python 3.8+
+---
 
-git in $PATH
+## Quick overview
 
-Optional: jq, csvkit for nice inspection
+What it does (TL;DR)
+- Optionally extract web servers from a Nessus `.nessus` file into `web_servers.txt`.
+- Optionally clone and run default-http-login-hunter against those targets.
+- Stream and save raw hunter output to `hunter_raw.txt`.
+- Parse that output, remove noise, group multiple credentials per host into a single CSV cell, and export:
+  - `hunter_parsed_grouped.csv`
+  - `hunter_parsed_grouped.json`
+
+---
+
+## Badges (drop-in)
+Paste these at the top of your repo README.md and replace `<youruser>/<repo>`:
+
+```
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)]
+[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)]
+[![GitHub Release](https://img.shields.io/github/v/release/<youruser>/<repo>?label=release)]
+```
+
+---
+
+## Requirements
+
+- Linux (Kali or Debian-based recommended)
+- Python 3.8+
+- git in $PATH
+- Optional: jq, csvkit for nicer inspection
 
 Install basics:
 
+```bash
 sudo apt update
 sudo apt install -y python3 python3-pip git
+```
 
-🚀 Quick install
+---
 
-Clone your repo (or create one) and add GhostPasswordParser.py.
+## Quick install
 
-Run from repo root:
+1. Clone your repo (or create one) and add `GhostPasswordParser.py`.
+2. Run from repo root.
 
-# full run: clone hunter, extract from Nessus, run hunter, parse results
+Full run (clone hunter, extract from Nessus, run hunter, parse results):
+
+```bash
 python3 GhostPasswordParser.py -n scan.nessus --outdir results
+```
 
-# run parser only on existing output
+Parse only (hunter output already exists):
+
+```bash
 python3 GhostPasswordParser.py hunter_raw.txt --outdir results
+```
 
-🧭 Usage & examples
-usage: GhostPasswordParser.py [INFILE] [flags]
+---
+
+## Usage & examples
+
+Usage: `GhostPasswordParser.py [INFILE] [flags]`
 
 Examples:
-# 1) Full automated pipeline using a Nessus file
+
+1) Full pipeline using a Nessus file
+
+```bash
 python3 GhostPasswordParser.py -n example_scan.nessus --outdir ./results
+```
 
-# 2) Hunter output already exists; parse only
+2) Parse existing hunter output and redact passwords
+
+```bash
 python3 GhostPasswordParser.py hunter_raw.txt --outdir ./results --redact
+```
 
-# 3) Skip cloning (you already have hunter)
+3) Skip cloning (you already have the hunter repo locally)
+
+```bash
 python3 GhostPasswordParser.py -n example_scan.nessus --no-clone
+```
 
-# 4) Write outputs to a specific folder
+4) Save outputs to a custom folder
+
+```bash
 python3 GhostPasswordParser.py -n example_scan.nessus --outdir /tmp/ghost_results
+```
 
+---
 
-Important flags:
+## Important flags
 
--n, --nessus FILE — Nessus XML to extract web servers from
+- `-n, --nessus FILE` — Nessus XML to extract web servers from
+- `--no-clone` — don't clone default-http-login-hunter
+- `--no-run-hunter` — skip running hunter (parse-only)
+- `--hunter-out FILE` — path for raw hunter output (default `hunter_raw.txt`)
+- `--outdir DIR` — directory for CSV/JSON outputs (default `.`)
+- `--redact` — replace passwords with `REDACTED` in CSV
+- `--sep SEP` — separator for multiple creds in CSV (default `;`)
 
---no-clone — don't clone default-http-login-hunter
+Tip: a `--hunter-args` flag to forward arguments to the hunter would be handy (suggested contribution).
 
---no-run-hunter — skip running hunter (parse-only)
+---
 
---hunter-out FILE — path for raw hunter output (default hunter_raw.txt)
+## Output files
 
---outdir DIR — where CSV/JSON are saved (default .)
+- `web_servers.txt` — extracted targets (one URL per line)
+- `hunter_raw.txt` — raw stdout/stderr captured from the hunter run
+- `hunter_parsed_grouped.csv` — one row per host; multiple credentials grouped in one cell
+- `hunter_parsed_grouped.json` — full parsed structure for programmatic use
 
---redact — replace passwords with REDACTED in CSV
+---
 
---sep SEP — separator for multiple creds in CSV (default ; )
+## Troubleshooting & tips
 
-🗂 Output files
+- No creds found: verify targets are reachable (try `curl -I http://IP:PORT/`).
+- Malformed `web_servers.txt`: open it and inspect a few lines — your Nessus exporter might need adjustment. Paste examples if you want me to tune the extractor.
+- Hunter script failing with "No such file or directory": the wrapper runs hunter from inside the hunter repo; do not pass the repo path as the runner argument. Use `--no-clone` if you maintain the hunter repo yourself.
+- Want verbose hunter output: run the hunter manually with `-vvv` or ask to add a `--hunter-args` passthrough.
+- Large runs: use a beefy VM and ensure you have written permission to test targets.
 
-web_servers.txt — extracted targets (one URL per line)
+---
 
-hunter_raw.txt — raw stdout/stderr captured from the hunter run
+## Security & Legal (read this)
 
-hunter_parsed_grouped.csv — one row per host; multiple creds grouped in one cell
+Do not run this tool against systems you are not authorized to test. Attempting logins against third-party hosts without explicit permission is illegal in many jurisdictions. Use only against:
 
-hunter_parsed_grouped.json — full parsed structure for programmatic use
+- assets you own, or
+- assets you have explicit permission to test (scope in a signed engagement).
 
-🔎 Troubleshooting & tips
+Handle credential exports securely. Use `--redact` if storing results in less-secure places.
 
-No creds found: verify targets are reachable (try curl -I http://IP:PORT/).
+---
 
-Malformed web_servers.txt: open the file; your Nessus extractor might need adjustment. Paste a few lines if you want me to tune it.
-
-Hunter script failing with No such file or directory: script runs hunter from inside the hunter repo; don't pass the repo path as the runner argument. Use --no-clone if you maintain the repo yourself.
-
-Want verbose hunter output: run the hunter manually with -vvv or ask me to add a --hunter-args flag.
-
-Large runs: consider running on a beefy VM and ensure you have permission to test the targets.
-
-🔐 Security & Legal (read this)
-
-Do not run this tool against systems you are not authorized to test. Running login attempts against third-party hosts without explicit permission is illegal in many jurisdictions. Use only against:
-
-assets you own, or
-
-assets you have written permission to test (explicit scope in a signed engagement).
-
-Handle all credential exports securely. Use --redact if you need to store results in less-secure locations.
-
-✍️ Contributing
+## Contributing
 
 PRs welcome. Suggested contributions:
-
-Add --hunter-args to tune hunter verbosity.
-
-Improve Nessus parsing (support more shapes of svc_name).
-
-Add unit tests for the parser (sample hunter outputs).
-
-Improve CSV/JSON schema for SIEM ingestion.
+- Add `--hunter-args` passthrough to tune hunter verbosity
+- Improve Nessus parsing (support more shapes of `svc_name`)
+- Add unit tests for the parser (sample hunter outputs)
+- Improve CSV/JSON schema for SIEM ingestion
 
 When opening a PR:
+- keep changes small and focused
+- add a short explanation of "why"
+- include sample input/output where relevant
 
-keep changes small and focused,
+---
 
-add a short note explaining why,
+## License
 
-include sample input/output where relevant.
+Suggested: MIT. Add a `LICENSE` file with the MIT text if you want this to be public under MIT terms. If you prefer a different license, replace accordingly.
 
-🧾 License
+---
 
-Suggested: MIT (simple, permissive). Add a LICENSE file with the MIT text if you want to make it public.
-If you prefer a different license, choose one that matches how you want others to reuse the project.
+## FAQ
 
-📌 FAQ (short)
-
-Q: Can I make the repo private so only some people can clone with a special link?
-A: Yes — host it in a private GitHub repo and add those people as collaborators or a team. There is no special clone link per-user; GitHub manages access via account permissions and tokens.
+Q: Can I make the repo private?
+A: Yes — host it in a private GitHub repo and add collaborators or a team. GitHub manages access via account permissions and tokens.
 
 Q: How do I run only parsing on a saved hunter output?
-A: python3 GhostPasswordParser.py hunter_raw.txt --outdir results
+A: `python3 GhostPasswordParser.py hunter_raw.txt --outdir results`
+
+---
+
+If you'd like, I can:
+- Add a short example of the expected `hunter_raw.txt` input and the exact parser output,
+- Convert this README into a template with badges filled in automatically,
+- Or open a small PR updating the repo README directly.
+```
