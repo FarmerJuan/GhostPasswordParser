@@ -1,10 +1,6 @@
 ```markdown
 # GhostPasswordParser
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)]
-[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)]
-[![GitHub Release](https://img.shields.io/github/v/release/<youruser>/<repo>?label=release)]
-
 GhostPasswordParser is a lightweight helper for pentesters: it extracts web targets from Nessus exports, runs default-http-login-hunter (optionally), streams and saves raw hunter output, then parses, cleans, and groups discovered credentials into tidy CSV and JSON exports.
 
 Think of it as “glue + cleanup” to make credential exports ready for reporting or ingestion.
