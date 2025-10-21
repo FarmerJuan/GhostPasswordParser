@@ -34,17 +34,6 @@ What it does (TL;DR)
 
 ---
 
-## Badges (drop-in)
-Paste these at the top of your repo README.md and replace `<youruser>/<repo>`:
-
-```
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)]
-[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)]
-[![GitHub Release](https://img.shields.io/github/v/release/<youruser>/<repo>?label=release)]
-```
-
----
-
 ## Requirements
 
 - Linux (Kali or Debian-based recommended)
