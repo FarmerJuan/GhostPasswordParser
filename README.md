@@ -1,161 +1,171 @@
-```markdown
-# GhostPasswordParser
+# GhostParser
 
-GhostPasswordParser is a lightweight helper for pentesters: it extracts web targets from Nessus exports, runs default-http-login-hunter (optionally), streams and saves raw hunter output, then parses, cleans, and groups discovered credentials into tidy CSV and JSON exports.
-
-Think of it as “glue + cleanup” to make credential exports ready for reporting or ingestion.
-
----
-
-Table of Contents
-- Quick overview
-- Badges & Requirements
-- Quick install
-- Usage & examples
-- Important flags
-- Output files
-- Troubleshooting
-- Security & legal
-- Contributing
-- License
-- FAQ
-
----
-
-## Quick overview
-
-What it does (TL;DR)
-- Optionally extract web servers from a Nessus `.nessus` file into `web_servers.txt`.
-- Optionally clone and run default-http-login-hunter against those targets.
-- Stream and save raw hunter output to `hunter_raw.txt`.
-- Parse that output, remove noise, group multiple credentials per host into a single CSV cell, and export:
-  - `hunter_parsed_grouped.csv`
-  - `hunter_parsed_grouped.json`
+**GhostParser** is an all-in-one pentesting helper that:
+1. Extracts web servers from a Nessus export into `web_servers.txt`
+2. Runs an **OOS SSRF check** against those targets (inlined — no second script needed)
+3. Clones and runs **default-http-login-hunter** against the same targets
+4. Parses, cleans, and groups discovered credentials into **CSV** and **JSON**
+5. Writes SSRF results to a colour-coded **Excel workbook** (`ssrf_results.xlsx`)
 
 ---
 
 ## Requirements
 
-- Linux (Kali or Debian-based recommended)
+- **Linux / Kali recommended** — the hunter needs `bash` + `git`
 - Python 3.8+
-- git in $PATH
-- Optional: jq, csvkit for nicer inspection
-
-Install basics:
+- `git` in `$PATH` (for cloning the hunter repo)
 
 ```bash
-sudo apt update
-sudo apt install -y python3 python3-pip git
+sudo apt update && sudo apt install -y python3 python3-pip git
+pip3 install requests urllib3 openpyxl
 ```
+
+> **Windows users:** The SSRF check runs fine on Windows. The hunter step requires Kali/Linux (or WSL with git + bash).
 
 ---
 
 ## Quick install
 
-1. Clone your repo (or create one) and add `GhostPasswordParser.py`.
-2. Run from repo root.
+Drop `GhostParser.py` anywhere and run it. No companion scripts required.
 
-Full run (clone hunter, extract from Nessus, run hunter, parse results):
+---
 
-```bash
-python3 GhostPasswordParser.py -n scan.nessus --outdir results
+## Usage
+
+```
+python3 GhostParser.py [INFILE] [flags]
 ```
 
-Parse only (hunter output already exists):
+### Common workflows
 
+**Full pipeline — Nessus file → SSRF → hunter → CSV/JSON**
 ```bash
-python3 GhostPasswordParser.py hunter_raw.txt --outdir results
+python3 GhostParser.py -n scan.nessus --outdir results
+```
+
+**Existing web server list → SSRF → hunter → CSV/JSON**
+```bash
+python3 GhostParser.py --webservers webs.txt --outdir results
+```
+
+**SSRF only (no hunter)**
+```bash
+python3 GhostParser.py --webservers webs.txt --no-run-hunter
+```
+
+**Parse existing hunter output (skip SSRF + hunter)**
+```bash
+python3 GhostParser.py hunter_raw.txt --outdir results --no-ssrf-check
+```
+
+**Redact passwords in CSV output**
+```bash
+python3 GhostParser.py -n scan.nessus --outdir results --redact
+```
+
+**Reuse existing webhook.site token (avoid rate-limits)**
+```bash
+python3 GhostParser.py --webservers webs.txt --ssrf-webhook <token>
 ```
 
 ---
 
-## Usage & examples
+## Pipeline flow
 
-Usage: `GhostPasswordParser.py [INFILE] [flags]`
-
-Examples:
-
-1) Full pipeline using a Nessus file
-
-```bash
-python3 GhostPasswordParser.py -n example_scan.nessus --outdir ./results
 ```
-
-2) Parse existing hunter output and redact passwords
-
-```bash
-python3 GhostPasswordParser.py hunter_raw.txt --outdir ./results --redact
-```
-
-3) Skip cloning (you already have the hunter repo locally)
-
-```bash
-python3 GhostPasswordParser.py -n example_scan.nessus --no-clone
-```
-
-4) Save outputs to a custom folder
-
-```bash
-python3 GhostPasswordParser.py -n example_scan.nessus --outdir /tmp/ghost_results
+  -n nessusfile.nessus
+        │
+        ▼
+  Extract web_servers.txt
+        │
+        ▼  (or start here with --webservers webs.txt)
+  OOS SSRF Check  ──► ssrf_results.xlsx
+        │
+        ▼
+  default-http-login-hunter  ──► hunter_raw.txt
+        │
+        ▼
+  Parse & group credentials
+        │
+        ├──► hunter_parsed_grouped.csv
+        └──► hunter_parsed_grouped.json
 ```
 
 ---
 
-## Important flags
+## Flags
 
-- `-n, --nessus FILE` — Nessus XML to extract web servers from
-- `--no-clone` — don't clone default-http-login-hunter
-- `--no-run-hunter` — skip running hunter (parse-only)
-- `--hunter-out FILE` — path for raw hunter output (default `hunter_raw.txt`)
-- `--outdir DIR` — directory for CSV/JSON outputs (default `.`)
-- `--redact` — replace passwords with `REDACTED` in CSV
-- `--sep SEP` — separator for multiple creds in CSV (default `;`)
+### Core
 
-Tip: a `--hunter-args` flag to forward arguments to the hunter would be handy (suggested contribution).
+| Flag | Default | Description |
+|---|---|---|
+| `INFILE` | — | Hunter output to parse directly |
+| `-n, --nessus FILE` | — | Nessus XML to extract web servers from |
+| `--webservers FILE` | `web_servers.txt` | Web servers list |
+| `--hunter-out FILE` | `hunter_raw.txt` | Raw hunter output path |
+| `--no-clone` | — | Skip cloning the hunter repo |
+| `--repo DIR` | `./default-http-login-hunter` | Hunter repo directory |
+| `--no-run-hunter` | — | Skip running the hunter |
+| `--outdir DIR` | `.` | Output directory for CSV/JSON |
+| `--redact` | — | Replace passwords with `REDACTED` in CSV |
+| `--sep SEP` | `; ` | Separator for multiple creds in CSV cell |
+| `--stdout` | — | Print one-line summary per host to stdout |
+
+### OOS SSRF Check
+
+| Flag | Default | Description |
+|---|---|---|
+| `--ssrf-check` / `--no-ssrf-check` | on | Toggle the SSRF scan |
+| `--ssrf-threads N` | `10` | Concurrent scan threads |
+| `--ssrf-timeout SEC` | `15` | Max wait for OOB callback |
+| `--ssrf-webhook TOKEN` | — | Reuse an existing webhook.site token |
+| `--ssrf-output FILE` | `ssrf_results.xlsx` | Excel output file |
 
 ---
 
 ## Output files
 
-- `web_servers.txt` — extracted targets (one URL per line)
-- `hunter_raw.txt` — raw stdout/stderr captured from the hunter run
-- `hunter_parsed_grouped.csv` — one row per host; multiple credentials grouped in one cell
-- `hunter_parsed_grouped.json` — full parsed structure for programmatic use
+| File | Description |
+|---|---|
+| `web_servers.txt` | Extracted targets — one URL per line |
+| `ssrf_results.xlsx` | Colour-coded Excel: Target, WOPI Endpoint, SSRF, OOS Version, Callback IP |
+| `hunter_raw.txt` | Raw stdout from the hunter |
+| `hunter_parsed_grouped.csv` | One row per host; creds grouped in one cell |
+| `hunter_parsed_grouped.json` | Full parsed structure |
+
+### Excel colour key
+
+| Colour | Meaning |
+|---|---|
+| 🟢 Green | Confirmed SSRF vulnerable |
+| 🟡 Yellow | OOS + WOPI detected, no SSRF callback |
+| 🔴 Red | OOS detected, not vulnerable |
+| ⬜ Grey | Not an OOS server |
+
+> If `openpyxl` is not installed, a plain `.csv` is written instead.
 
 ---
 
-## Troubleshooting & tips
+## Troubleshooting
 
-- No creds found: verify targets are reachable (try `curl -I http://IP:PORT/`).
-- Malformed `web_servers.txt`: open it and inspect a few lines — your Nessus exporter might need adjustment. Paste examples if you want me to tune the extractor.
-- Hunter script failing with "No such file or directory": the wrapper runs hunter from inside the hunter repo; do not pass the repo path as the runner argument. Use `--no-clone` if you maintain the hunter repo yourself.
-- Want verbose hunter output: run the hunter manually with `-vvv` or ask to add a `--hunter-args` passthrough.
-- Large runs: use a beefy VM and ensure you have written permission to test targets.
+- **git not found** — install git or run on Kali (hunter requires it; SSRF check does not)
+- **`requests`/`urllib3` missing** — run `pip3 install requests urllib3`
+- **`openpyxl` missing** — run `pip3 install openpyxl` (falls back to CSV)
+- **No hunter output to parse** — if hunter didn't run, GhostParser exits cleanly after the SSRF scan with no error
+- **Malformed `web_servers.txt`** — inspect a few lines; your Nessus exporter may need tuning
 
 ---
 
-## Security & Legal (read this)
+## Security & Legal
 
-Do not run this tool against systems you are not authorized to test. Attempting logins against third-party hosts without explicit permission is illegal in many jurisdictions. Use only against:
-
-- assets you own, or
-- assets you have explicit permission to test (scope in a signed engagement).
-
-Handle credential exports securely. Use `--redact` if storing results in less-secure places.
+Only use against systems you **own** or have **explicit written permission** to test. Credential spraying and SSRF probing against unauthorised systems is illegal. Use `--redact` when storing results in less-secure locations.
 
 ---
 
 ## Contributing
 
-PRs welcome. Suggested contributions:
-- Add `--hunter-args` passthrough to tune hunter verbosity
-- Improve Nessus parsing (support more shapes of `svc_name`)
-- Add unit tests for the parser (sample hunter outputs)
-- Improve CSV/JSON schema for SIEM ingestion
-
-When opening a PR:
-- keep changes small and focused
-- add a short explanation of "why"
-- include sample input/output where relevant
-
----
+PRs welcome. Ideas:
+- `--hunter-args` passthrough for verbose hunter output
+- Additional Nessus `svc_name` shapes
+- SIEM-compatible JSON schema
+- Unit tests with sample hunter output
